@@ -4,31 +4,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nazavode/rm/pocket"
 	"io/ioutil"
 	"log"
 	"os"
-	"sort"
 	"time"
-	"github.com/nazavode/rm"
-	pocket "github.com/bvp/go-pocket/api"
 )
-
-type Auth struct {
-	Token       string `json:"token,omitempty"`
-	ConsumerKey string `json:"consumer_key,omitempty"`
-	User        string `json:"user,omitempty"`
-}
 
 const (
 	defaultAuthPath string = "~/.pocket"
 	defaultTag      string = "rm"
 )
-
-type ItemList []pocket.Item
-
-func (s ItemList) Len() int           { return len(s) }
-func (s ItemList) Less(i, j int) bool { return s[i].SortId < s[j].SortId }
-func (s ItemList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 func main() {
 	var log = log.New(os.Stderr, "", 0)
@@ -55,47 +41,29 @@ func main() {
 	}
 	defer jsonFile.Close()
 	jsonBytes, _ := ioutil.ReadAll(jsonFile)
-	auth := Auth{}
+	auth := pocket.Auth{}
 	if err := json.Unmarshal(jsonBytes, &auth); err != nil {
 		log.Fatal(err)
 	}
-	pocketClient := pocket.NewClient(auth.ConsumerKey, auth.Token)
-	pocketOpts := &pocket.RetrieveOption{
-		// Favorite: pocketApi.FavoriteFilterFavorited,
-		Tag:   defaultTag,
-		State: pocket.StateUnread,
-		// Sort:  pocket.SortOldest, // doesn't seem to be working right
-	}
 	// Loop forever
-	pocketOpts.Since = 0 // first iteration retrieves everything since epoch
+	var since int64
+	since = 0                        // first iteration retrieves everything since epoch
 	sleepInterval := 0 * time.Second // first iteration checks immediately
 	for {
 		time.Sleep(sleepInterval)
-		res, err := pocketClient.Retrieve(pocketOpts)
-		pocketOpts.Since = int(time.Now().Unix()) // TODO fix upstream, .Since must be int64
+		res, err := auth.Retrieve(pocket.Since(since), pocket.WithTag(defaultTag), pocket.Unread)
+		since = res.Since + 1
 		sleepInterval = interval // from now on we abide by the requested interval
 		if err != nil {
 			log.Printf("WARN: %s\n", err)
 			continue
 		}
-		if len(res.List) <= 0 {
-			continue
-		}
-		items := []pocket.Item{}
-		for _, item := range res.List {
-			items = append(items, item)
-		}
-		sort.Sort(ItemList(items))
-		for _, item := range items {
-			bytes, err := json.Marshal(&rm.Item{
-				Id:  item.ItemID,
-				Url: item.ResolvedURL,
-			})
-			if err != nil {
-				log.Printf("WARN: %s\n", err)
-				continue
+		for _, item := range res.Items {
+			url := item.ResolvedURL
+			if len(url) <= 0 {
+				url = item.GivenURL
 			}
-			fmt.Println(string(bytes))
+			fmt.Println(url)
 		}
 	}
 }

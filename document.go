@@ -3,12 +3,14 @@ package rm
 import (
 	"time"
 	"fmt"
+	"net/url"
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/kennygrant/sanitize"
 )
 
 type Document interface {
+	Slug() string
 	Title() string
 	Content() string
 	Format() string
@@ -16,6 +18,17 @@ type Document interface {
 
 type htmlDocument struct {
 	article readability.Article
+}
+
+func (h *htmlDocument) Slug() string {
+	source := h.article.Title
+	if len(source) <= 0 {
+		source = h.article.SiteName
+	}
+	if len(source) <= 0 {
+		source = "Untitled"
+	}
+	return sanitize.Name(source)
 }
 
 func (h *htmlDocument) Title() string {
@@ -37,8 +50,8 @@ func (h *htmlDocument) Content() string {
 	return h.article.Content
 }
 
-func Retrieve(url string, timeout time.Duration) (Document, error) {
-	article, err := readability.FromURL(url, timeout)
+func Retrieve(target *url.URL, timeout time.Duration) (Document, error) {
+	article, err := readability.FromURL(target.String(), timeout)
 	if err != nil {
 		return nil, err
 	}
