@@ -1,4 +1,5 @@
 # Command artifacts
+cmd/rmd/rmd
 cmd/pocket-tail/pocket-tail
 cmd/url-to-epub/url-to-epub
 

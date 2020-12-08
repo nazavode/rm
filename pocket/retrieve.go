@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"time"
 )
 
 type retrieveOptions struct {
@@ -21,12 +22,16 @@ type retrieveOptions struct {
 	Offset      int64  `json:"offset,omitempty"`
 }
 
-func NewRetrieveOptions() *retrieveOptions {
-	return &retrieveOptions{
+func NewRetrieveOptions(opts ...RetrieveOpt) *retrieveOptions {
+	c := &retrieveOptions{
 		ContentType: "article",
 		Sort:        "oldest",
 		DetailType:  "simple",
 	}
+	for _, f := range opts {
+		f(c)
+	}
+	return c
 }
 
 type item struct {
@@ -137,15 +142,10 @@ func (r *apiRetrieveResult) UnmarshalJSON(data []byte) error {
 		}
 	}
 	// Everything else is considered Case 2
-	return fmt.Errorf("unexpected json type for retrieveResult")
+	return fmt.Errorf("unexpected json type for apiRetrieveResult")
 }
 
-func (a *Auth) Retrieve(opts ...RetrieveOpt) (*RetrieveResult, error) {
-	conf := NewRetrieveOptions()
-	for _, f := range opts {
-		f(conf)
-	}
-	// Do API call
+func (a *Auth) Retrieve(conf *retrieveOptions) (*RetrieveResult, error) {
 	args := retrievePayload{a, conf}
 	res := &apiRetrieveResult{}
 	err := postJSON("/v3/get", args, &res)
@@ -170,6 +170,39 @@ func (a *Auth) Retrieve(opts ...RetrieveOpt) (*RetrieveResult, error) {
 	ret.Items = items
 	ret.RetrieveResultMeta = res.RetrieveResultMeta
 	return ret, nil
+}
+
+func (a *Auth) Tail(conf *retrieveOptions, tick <-chan time.Time, done <-chan bool) <-chan interface{} {
+	out := make(chan interface{})
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick:
+				res, err := a.Retrieve(conf)
+				if err != nil {
+					out <- err
+					continue
+				}
+				conf.Since = res.Since + 1
+				for _, item := range res.Items {
+					itemURL := item.ResolvedURL
+					if len(itemURL) <= 0 {
+						itemURL = item.GivenURL
+					}
+					itemResult, err := url.Parse(itemURL)
+					if err != nil {
+						out <- err
+						continue
+					}
+					out <- itemResult
+				}
+			}
+		}
+	}()
+	return out
 }
 
 type itemList []item
