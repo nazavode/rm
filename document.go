@@ -60,7 +60,7 @@ func Retrieve(target *url.URL, timeout time.Duration) (Document, error) {
 
 func DocumentToEPUB(d Document, filename string, timeout time.Duration) error {
 	err := Command(d.Content(), timeout, "pandoc",
-		"-o", filename, "-f", d.Format(), "--metadata", fmt.Sprintf("title=%s", d.Title()))
+		"-o", filename, "-f", d.Format(), "--metadata", fmt.Sprintf("title='%s'", d.Title()))
 	if err != nil {
 		return err
 	}
