@@ -52,6 +52,7 @@ func main() {
 	}
 	flag.StringVar(&outDir, "out", outDir, "Directory for generated EPUB files")
 	flag.Parse()
+	os.MkdirAll(outDir, os.ModePerm)
 	scanner := bufio.NewScanner(os.Stdin)
 	var wg sync.WaitGroup
 	for scanner.Scan() {
