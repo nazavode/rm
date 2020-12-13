@@ -86,6 +86,16 @@ func main() {
 				Value:   30 * time.Second,
 			},
 			&cli.StringFlag{
+				Name:    "rm-token",
+				Usage:   "Use `STRING` as reMarkable cloud API access token",
+				EnvVars: []string{"RMD_RM_TOKEN"},
+			},
+			&cli.StringFlag{
+				Name:    "rm-key",
+				Usage:   "Use `STRING` as reMarkable cloud API consumer key",
+				EnvVars: []string{"RMD_RM_KEY"},
+			},
+			&cli.StringFlag{
 				Name:    "pocket-token",
 				Usage:   "Use `STRING` as Pocket API access token",
 				EnvVars: []string{"RMD_POCKET_TOKEN"},
@@ -157,8 +167,24 @@ func main() {
 				}
 			}()
 			c.Workdir = tmp
-			// 1. Spawn item producer
-			conn := &pocket.Auth{
+			// Create downstream destination directory
+			log.Trace("connecting to reMarkable cloud")
+			rmConn, err := rm.NewConnection(ctx.String("rm-token"), ctx.String("rm-key"))
+			if err != nil {
+				log.WithError(err).
+					Fatal("connection to reMarkable cloud failed")
+			}
+			log.Trace("connected to reMarkable cloud")
+			log.WithField("path", ctx.String("dest")).
+				Trace("creating reMarkable destination directory")
+			if err := rmConn.MkDir(ctx.String("dest")); err != nil {
+				log.WithError(err).
+					Fatal("creation of reMarkable destination directory failed")
+			}
+			log.WithField("path", ctx.String("dest")).
+				Trace("reMarkable destination directory created")
+			// Spawn item producer
+			pocketConn := &pocket.Auth{
 				ConsumerKey: ctx.String("pocket-key"),
 				AccessToken: ctx.String("pocket-token"),
 			}
@@ -171,20 +197,36 @@ func main() {
 				interval.Stop()
 				stop <- true
 			}()
+			// Send stop signal when we receive a SIGTERM
+			// signals := make(chan os.Signal, 1)
+			// signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+			// go func() {
+			// 	select {
+			// 	case <- signals:
+			// 		stop <- true
+			// 	case <- stop:
+			// 	}
+			// }()
+			//
 			opts := pocket.NewRetrieveOptions(pocket.WithTag("rm"), pocket.Unread)
 			var wg sync.WaitGroup
 			var id uint64 = 0
-			for item := range conn.Tail(opts, interval.C, stop) {
+			log.Trace("begin to retrieve items")
+			for item := range pocketConn.Tail(opts, interval.C, stop) {
 				switch v := item.(type) {
 				case *url.URL:
 					wg.Add(1)
 					go doWork(id, c, v, &wg)
 					id++
 				case error:
-					log.WithError(v).Warn("item retrieval failed")
+					log.WithError(v).Warn("item failed, skipping")
+				default:
+					log.Warn("unexpected item, skipping")
 				}
 			}
+			log.Trace("waiting for remaining workers to exit")
 			wg.Wait()
+			log.Trace("all workers exited")
 			return nil
 		},
 	}
