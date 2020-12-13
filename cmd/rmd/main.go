@@ -23,36 +23,45 @@ type conf struct {
 	Keep    bool
 }
 
-func doWork(c *conf, item *url.URL, wg *sync.WaitGroup) {
+func doWork(id uint64, c *conf, item *url.URL, wg *sync.WaitGroup) {
 	defer wg.Done()
-	out := log.WithFields(log.Fields{"url": item})
-	out.Info("worker started")
-	defer out.Info("worker exited")
+	out := log.WithField("id", id)
+	out.Trace("worker started")
+	defer out.Trace("worker done")
 	// Download URL
+	out.WithField("url", item).Trace("retrieving item")
 	doc, err := rm.Retrieve(item, c.Timeout)
 	if err != nil {
-		out.Warn("failed to retrieve item")
+		out.WithField("url", item).
+			WithError(err).
+			Warn("failed to retrieve item")
 		return
 	}
-	out.Trace("item retrieved")
+	out = out.WithField("item", doc.Slug())
+	out.WithField("url", item).Trace("item retrieved")
 	// Convert document
 	basename := fmt.Sprintf("%s.epub", doc.Slug())
 	outPath := path.Join(c.Workdir, basename)
-	out = out.WithFields(log.Fields{"epub": outPath})
 	defer func() {
 		if !c.Keep {
 			if err := os.Remove(outPath); err != nil {
-				out.Warn("failed to remove document")
+				out.WithField("path", outPath).
+					WithError(err).
+					Warn("failed to remove converted item")
 			} else {
-				out.Trace("document removed")
+				out.WithField("path", outPath).
+					Trace("converted item removed")
 			}
 		}
 	}()
+	out.WithField("path", outPath).Trace("converting item")
 	if err := rm.DocumentToEPUB(doc, outPath, c.Timeout); err != nil {
-		out.Warn("item conversion failed")
+		out.WithField("path", outPath).
+			WithError(err).
+			Warn("item conversion failed")
 		return
 	}
-	out.Trace("item converted to epub")
+	out.WithField("path", outPath).Trace("item converted")
 	// Upload
 }
 
@@ -164,13 +173,15 @@ func main() {
 			}()
 			opts := pocket.NewRetrieveOptions(pocket.WithTag("rm"), pocket.Unread)
 			var wg sync.WaitGroup
+			var id uint64 = 0
 			for item := range conn.Tail(opts, interval.C, stop) {
 				switch v := item.(type) {
 				case *url.URL:
 					wg.Add(1)
-					go doWork(c, v, &wg)
+					go doWork(id, c, v, &wg)
+					id++
 				case error:
-					log.Warn(v)
+					log.WithError(v).Warn("item retrieval failed")
 				}
 			}
 			wg.Wait()
