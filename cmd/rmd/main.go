@@ -114,7 +114,7 @@ func appMain(ctx *cli.Context) error {
 	c.Workdir = tmp
 	// Create downstream destination directory
 	log.Trace("connecting to reMarkable cloud")
-	rmConn, err := rm.NewConnection(ctx.String("rm-token"), ctx.String("rm-key"))
+	rmConn, err := rm.NewConnection(ctx.String("rm-device"), ctx.String("rm-user"))
 	if err != nil {
 		log.WithError(err).
 			Fatal("connection to reMarkable cloud failed")
@@ -184,14 +184,14 @@ func main() {
 				Value:   30 * time.Second,
 			},
 			&cli.StringFlag{
-				Name:    "rm-token",
-				Usage:   "Use `STRING` as reMarkable cloud API access token",
-				EnvVars: []string{"RMD_RM_TOKEN"},
+				Name:    "rm-device",
+				Usage:   "Use `STRING` as reMarkable cloud API device token",
+				EnvVars: []string{"RMD_RM_DEVICE_TOKEN"},
 			},
 			&cli.StringFlag{
-				Name:    "rm-key",
-				Usage:   "Use `STRING` as reMarkable cloud API consumer key",
-				EnvVars: []string{"RMD_RM_KEY"},
+				Name:    "rm-user",
+				Usage:   "Use `STRING` as reMarkable cloud API user token",
+				EnvVars: []string{"RMD_RM_USER_TOKEN"},
 			},
 			&cli.StringFlag{
 				Name:    "pocket-token",
@@ -220,12 +220,6 @@ func main() {
 				Usage:   "Use `EXE` as document format conversion program",
 				EnvVars: []string{"RMD_PANDOC"},
 				Value:   "pandoc",
-			},
-			&cli.StringFlag{
-				Name:    "rmapi",
-				Value:   "rmapi",
-				Usage:   "Use `EXE` as reMarkable cloud uploader program",
-				EnvVars: []string{"RMD_RMAPI"},
 			},
 			&cli.BoolFlag{
 				Name:    "verbose",
