@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"sync"
 	"time"
@@ -23,7 +24,7 @@ type conf struct {
 	Keep    bool
 }
 
-func doWork(id uint64, c *conf, item *url.URL, wg *sync.WaitGroup) {
+func doWork(id uint64, c *conf, item *url.URL, conn *rm.Connection, wg *sync.WaitGroup) {
 	defer wg.Done()
 	out := log.WithField("id", id)
 	out.Trace("worker started")
@@ -65,11 +66,108 @@ func doWork(id uint64, c *conf, item *url.URL, wg *sync.WaitGroup) {
 	// Upload
 }
 
+func handleSignals(notify chan<- bool) {
+	// Send stop signal to tailer goroutine when
+	// we receive a SIGTERM
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	go func() {
+		log.Trace("signal handler started")
+		defer log.Trace("signal handler exiting")
+		sig := <-signals
+		log.WithField("signal", sig).
+			Trace("signal handler received signal")
+		signal.Stop(signals)
+		notify <- true
+	}()
+}
+
+func appMain(ctx *cli.Context) error {
+	log.SetLevel(log.WarnLevel)
+	if ctx.Bool("verbose") {
+		log.SetLevel(log.TraceLevel)
+	}
+	c := &conf{
+		Timeout: ctx.Duration("timeout"),
+		Pandoc:  ctx.String("pandoc"),
+		Keep:    ctx.Bool("keep"),
+	}
+	// Ensure we have external commands
+	if _, err := exec.LookPath(c.Pandoc); err != nil {
+		return err
+	}
+	// Additional scaffolding
+	tmp, err := ioutil.TempDir("", "rmd")
+	if err != nil {
+		log.WithField("path", tmp).Fatal("failed to create working directory")
+	}
+	log.WithField("path", tmp).Trace("working directory created")
+	defer func() {
+		if !c.Keep {
+			if err := os.RemoveAll(tmp); err != nil {
+				log.WithField("path", tmp).Warn("failed to remove working directory")
+			} else {
+				log.WithField("path", tmp).Trace("working directory removed")
+			}
+		}
+	}()
+	c.Workdir = tmp
+	// Create downstream destination directory
+	log.Trace("connecting to reMarkable cloud")
+	rmConn, err := rm.NewConnection(ctx.String("rm-token"), ctx.String("rm-key"))
+	if err != nil {
+		log.WithError(err).
+			Fatal("connection to reMarkable cloud failed")
+	}
+	log.Trace("connected to reMarkable cloud")
+	log.WithField("path", ctx.String("dest")).
+		Trace("creating reMarkable destination directory")
+	if err := rmConn.MkDir(ctx.String("dest")); err != nil {
+		log.WithError(err).
+			Fatal("creation of reMarkable destination directory failed")
+	}
+	log.WithField("path", ctx.String("dest")).
+		Trace("reMarkable destination directory created")
+	// Spawn item producer
+	pocketConn := &pocket.Auth{
+		ConsumerKey: ctx.String("pocket-key"),
+		AccessToken: ctx.String("pocket-token"),
+	}
+	tickTailer := time.NewTicker(ctx.Duration("interval"))
+	stopTailer := make(chan bool, 1)
+	handleSignals(stopTailer)
+	defer func() {
+		stopTailer <- true
+		tickTailer.Stop()
+	}()
+	opts := pocket.NewRetrieveOptions(pocket.WithTag("rm"), pocket.Unread)
+	var wg sync.WaitGroup
+	var id uint64 = 0
+	log.Trace("start listening for new items")
+	for item := range pocketConn.Tail(opts, tickTailer.C, stopTailer) {
+		switch v := item.(type) {
+		case *url.URL:
+			wg.Add(1)
+			go doWork(id, c, v, rmConn, &wg)
+			id++
+		case error:
+			log.WithError(v).Warn("item processing failed, skipping")
+		default:
+			log.Warn("unexpected item, skipping")
+		}
+	}
+	log.Trace("waiting for remaining workers to exit")
+	wg.Wait()
+	log.Trace("all workers exited")
+	return nil
+}
+
 func main() {
 	app := &cli.App{
 		Name:    "rmd",
 		Usage:   "A reMarkable cloud (https://my.remarkable.com) sync daemon",
 		Version: "v0.1a",
+		Action:  appMain,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "dest",
@@ -135,99 +233,6 @@ func main() {
 				Usage:   "Verbose mode. Causes rmd to print debugging messages about its progress.",
 				EnvVars: []string{"RMD_VERBOSE"},
 			},
-		},
-		Action: func(ctx *cli.Context) error {
-			log.SetLevel(log.WarnLevel)
-			if ctx.Bool("verbose") {
-				log.SetLevel(log.TraceLevel)
-			}
-			c := &conf{
-				Timeout: ctx.Duration("timeout"),
-				Pandoc:  ctx.String("pandoc"),
-				Keep:    ctx.Bool("keep"),
-			}
-			// Ensure we have external commands
-			if _, err := exec.LookPath(c.Pandoc); err != nil {
-				return err
-			}
-			// Additional scaffolding
-			tmp, err := ioutil.TempDir("", "rmd")
-			if err != nil {
-				log.WithField("path", tmp).Fatal("failed to create working directory")
-			} else {
-				log.WithField("path", tmp).Trace("working directory created")
-			}
-			defer func() {
-				if !c.Keep {
-					if err := os.RemoveAll(tmp); err != nil {
-						log.WithField("path", tmp).Warn("failed to remove working directory")
-					} else {
-						log.WithField("path", tmp).Trace("working directory removed")
-					}
-				}
-			}()
-			c.Workdir = tmp
-			// Create downstream destination directory
-			log.Trace("connecting to reMarkable cloud")
-			rmConn, err := rm.NewConnection(ctx.String("rm-token"), ctx.String("rm-key"))
-			if err != nil {
-				log.WithError(err).
-					Fatal("connection to reMarkable cloud failed")
-			}
-			log.Trace("connected to reMarkable cloud")
-			log.WithField("path", ctx.String("dest")).
-				Trace("creating reMarkable destination directory")
-			if err := rmConn.MkDir(ctx.String("dest")); err != nil {
-				log.WithError(err).
-					Fatal("creation of reMarkable destination directory failed")
-			}
-			log.WithField("path", ctx.String("dest")).
-				Trace("reMarkable destination directory created")
-			// Spawn item producer
-			pocketConn := &pocket.Auth{
-				ConsumerKey: ctx.String("pocket-key"),
-				AccessToken: ctx.String("pocket-token"),
-			}
-			// Input channels
-			interval := time.NewTicker(ctx.Duration("interval"))
-			stop := make(chan bool)
-			// Actually this never stops, so the following
-			// defer is practically useless.
-			defer func() {
-				interval.Stop()
-				stop <- true
-			}()
-			// Send stop signal when we receive a SIGTERM
-			// signals := make(chan os.Signal, 1)
-			// signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-			// go func() {
-			// 	select {
-			// 	case <- signals:
-			// 		stop <- true
-			// 	case <- stop:
-			// 	}
-			// }()
-			//
-			opts := pocket.NewRetrieveOptions(pocket.WithTag("rm"), pocket.Unread)
-			var wg sync.WaitGroup
-			var id uint64 = 0
-			log.Trace("begin to retrieve items")
-			for item := range pocketConn.Tail(opts, interval.C, stop) {
-				switch v := item.(type) {
-				case *url.URL:
-					wg.Add(1)
-					go doWork(id, c, v, &wg)
-					id++
-				case error:
-					log.WithError(v).Warn("item failed, skipping")
-				default:
-					log.Warn("unexpected item, skipping")
-				}
-			}
-			log.Trace("waiting for remaining workers to exit")
-			wg.Wait()
-			log.Trace("all workers exited")
-			return nil
 		},
 	}
 	cli.VersionFlag = &cli.BoolFlag{

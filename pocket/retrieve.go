@@ -173,7 +173,7 @@ func (a *Auth) Retrieve(conf *retrieveOptions) (*RetrieveResult, error) {
 }
 
 func (a *Auth) Tail(conf *retrieveOptions, tick <-chan time.Time, done <-chan bool) <-chan interface{} {
-	out := make(chan interface{})
+	out := make(chan interface{}, 1)
 	go func() {
 		defer close(out)
 		for {

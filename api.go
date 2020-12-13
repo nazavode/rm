@@ -17,8 +17,7 @@ type Auth struct {
 }
 
 func NewConnection(deviceToken, userToken string) (*Connection, error) {
-	// TODO fix upstream
-	rmLog.InitLog()
+	rmLog.InitLog() // TODO fix upstream
 	if len(deviceToken) <= 0 {
 		return nil, errors.New("invalid reMarkable device token")
 	}
