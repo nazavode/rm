@@ -65,13 +65,13 @@ func (s *Connection) MkDir(target string) error {
 	return nil
 }
 
-func (s *Connection) Put(srcName, dest string) error {
-	destDir := strings.Trim(strings.TrimSpace(dest), "/")
+func (s *Connection) Put(srcName, destDir string) error {
+	destDir = strings.Trim(strings.TrimSpace(destDir), "/")
 	docName, _ := rmUtil.DocPathToName(srcName)
 
 	destNode, err := s.apiCtx.Filetree.NodeByPath(destDir, s.apiCtx.Filetree.Root())
 	if err != nil || destNode.IsFile() {
-		return errors.New("directory doesn't exist")
+		return fmt.Errorf("directory doesn't exist: %s", destDir)
 	}
 
 	_, err = s.apiCtx.Filetree.NodeByPath(docName, destNode)

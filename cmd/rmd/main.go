@@ -19,12 +19,55 @@ import (
 
 type conf struct {
 	Timeout time.Duration
-	Workdir string
+	WorkDir string
 	Pandoc  string
 	Keep    bool
+	DestDir string
 }
 
-func doWork(id uint64, c *conf, item *url.URL, conn *rm.Connection, wg *sync.WaitGroup) {
+type document struct {
+	ID       uint64
+	FilePath string
+}
+
+func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *document, chan<- bool) {
+	in := make(chan *document, 100)
+	stop := make(chan bool, 1)
+	go func() {
+		log.Trace("uploader started")
+		defer wg.Done()
+		defer log.Trace("uploader done")
+		for {
+			select {
+			case doc := <-in:
+				if err := conn.Put(doc.FilePath, c.DestDir); err != nil {
+					log.WithError(err).
+						WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath}).
+						Warn("document upload failed")
+				}
+				log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath}).
+					Trace("document uploaded")
+				if !c.Keep {
+					if err := os.Remove(doc.FilePath); err != nil {
+						log.WithField("path", doc.FilePath).
+							WithError(err).
+							Warn("failed to remove document")
+					} else {
+						log.WithField("path", doc.FilePath).
+							Trace("document removed")
+					}
+				}
+
+			case <-stop:
+				log.Trace("uploader received shutdown request")
+				return
+			}
+		}
+	}()
+	return in, stop
+}
+
+func doRetrieve(id uint64, c *conf, item *url.URL, upload chan<- *document, wg *sync.WaitGroup) {
 	defer wg.Done()
 	out := log.WithField("id", id)
 	out.Trace("worker started")
@@ -42,19 +85,7 @@ func doWork(id uint64, c *conf, item *url.URL, conn *rm.Connection, wg *sync.Wai
 	out.WithField("url", item).Trace("item retrieved")
 	// Convert document
 	basename := fmt.Sprintf("%s.epub", doc.Slug())
-	outPath := path.Join(c.Workdir, basename)
-	defer func() {
-		if !c.Keep {
-			if err := os.Remove(outPath); err != nil {
-				out.WithField("path", outPath).
-					WithError(err).
-					Warn("failed to remove converted item")
-			} else {
-				out.WithField("path", outPath).
-					Trace("converted item removed")
-			}
-		}
-	}()
+	outPath := path.Join(c.WorkDir, basename)
 	out.WithField("path", outPath).Trace("converting item")
 	if err := rm.DocumentToEPUB(doc, outPath, c.Timeout); err != nil {
 		out.WithField("path", outPath).
@@ -64,9 +95,10 @@ func doWork(id uint64, c *conf, item *url.URL, conn *rm.Connection, wg *sync.Wai
 	}
 	out.WithField("path", outPath).Trace("item converted")
 	// Upload
+	upload <- &document{ID: id, FilePath: outPath}
 }
 
-func handleSignals(notify chan<- bool) {
+func handleSignals(chans ...chan<- bool) {
 	// Send stop signal to tailer goroutine when
 	// we receive a SIGTERM
 	signals := make(chan os.Signal, 1)
@@ -78,7 +110,9 @@ func handleSignals(notify chan<- bool) {
 		log.WithField("signal", sig).
 			Trace("signal handler received signal")
 		signal.Stop(signals)
-		notify <- true
+		for _, c := range chans {
+			c <- true
+		}
 	}()
 }
 
@@ -91,6 +125,7 @@ func appMain(ctx *cli.Context) error {
 		Timeout: ctx.Duration("timeout"),
 		Pandoc:  ctx.String("pandoc"),
 		Keep:    ctx.Bool("keep"),
+		DestDir: ctx.String("dest"),
 	}
 	// Ensure we have external commands
 	if _, err := exec.LookPath(c.Pandoc); err != nil {
@@ -111,7 +146,7 @@ func appMain(ctx *cli.Context) error {
 			}
 		}
 	}()
-	c.Workdir = tmp
+	c.WorkDir = tmp
 	// Create downstream destination directory
 	log.Trace("connecting to reMarkable cloud")
 	rmConn, err := rm.NewConnection(ctx.String("rm-device"), ctx.String("rm-user"))
@@ -120,35 +155,38 @@ func appMain(ctx *cli.Context) error {
 			Fatal("connection to reMarkable cloud failed")
 	}
 	log.Trace("connected to reMarkable cloud")
-	log.WithField("path", ctx.String("dest")).
+	log.WithField("path", c.DestDir).
 		Trace("creating reMarkable destination directory")
-	if err := rmConn.MkDir(ctx.String("dest")); err != nil {
+	if err := rmConn.MkDir(c.DestDir); err != nil {
 		log.WithError(err).
 			Fatal("creation of reMarkable destination directory failed")
 	}
-	log.WithField("path", ctx.String("dest")).
+	log.WithField("path", c.DestDir).
 		Trace("reMarkable destination directory created")
 	// Spawn item producer
 	pocketConn := &pocket.Auth{
 		ConsumerKey: ctx.String("pocket-key"),
 		AccessToken: ctx.String("pocket-token"),
 	}
-	tickTailer := time.NewTicker(ctx.Duration("interval"))
-	stopTailer := make(chan bool, 1)
-	handleSignals(stopTailer)
+	tailerTick := time.NewTicker(ctx.Duration("interval"))
+	tailerStop := make(chan bool, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	uploaderIn, uploaderStop := doUpload(c, rmConn, &wg)
+	handleSignals(tailerStop, uploaderStop)
 	defer func() {
-		stopTailer <- true
-		tickTailer.Stop()
+		uploaderStop <- true
+		tailerStop <- true
+		tailerTick.Stop()
 	}()
 	opts := pocket.NewRetrieveOptions(pocket.WithTag("rm"), pocket.Unread)
-	var wg sync.WaitGroup
 	var id uint64 = 0
 	log.Trace("start listening for new items")
-	for item := range pocketConn.Tail(opts, tickTailer.C, stopTailer) {
+	for item := range pocketConn.Tail(opts, tailerTick.C, tailerStop) {
 		switch v := item.(type) {
 		case *url.URL:
 			wg.Add(1)
-			go doWork(id, c, v, rmConn, &wg)
+			go doRetrieve(id, c, v, uploaderIn, &wg)
 			id++
 		case error:
 			log.WithError(v).Warn("item processing failed, skipping")
