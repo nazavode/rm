@@ -2,9 +2,12 @@ package rm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/url"
+	"os"
 	"os/exec"
 	"time"
 
@@ -62,12 +65,25 @@ func Retrieve(target *url.URL, timeout time.Duration) (Document, error) {
 }
 
 func DocumentToEPUB(d Document, filename string, timeout time.Duration) error {
-	err := command(d.Content(), timeout, "pandoc",
-		"-o", filename, "-f", d.Format(), "--metadata", fmt.Sprintf("title='%s'", d.Title()))
-	if err != nil {
-		return err
+	var meta struct {
+		Title string `json:"title"`
 	}
-	return nil
+	meta.Title = d.Title()
+	metafile, err := ioutil.TempFile("", "epub.*.txt")
+	if err != nil {
+		return fmt.Errorf("cannot create epub metadata temporary file: %s", err)
+	}
+	defer os.Remove(metafile.Name())
+	metaContent, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("cannot marshal epub metadata: %s", err)
+	}
+	if err := ioutil.WriteFile(metafile.Name(), metaContent, 0644); err != nil {
+		return fmt.Errorf("cannot write epub metadata temporary file: %s", err)
+	}
+	err = command(d.Content(), timeout, "pandoc",
+		"-o", filename, "-f", d.Format(), "--metadata-file", metafile.Name())
+	return err
 }
 
 func command(toStdin string, timeout time.Duration, exe string, args ...string) error {
