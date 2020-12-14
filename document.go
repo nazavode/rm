@@ -69,7 +69,7 @@ func DocumentToEPUB(d Document, filename string, timeout time.Duration) error {
 		Title string `json:"title"`
 	}
 	meta.Title = d.Title()
-	metafile, err := ioutil.TempFile("", "epub.*.txt")
+	metafile, err := ioutil.TempFile("", "epub.*.json")
 	if err != nil {
 		return fmt.Errorf("cannot create epub metadata temporary file: %s", err)
 	}
