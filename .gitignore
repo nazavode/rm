@@ -1,7 +1,5 @@
 # Command artifacts
 cmd/rmd/rmd
-cmd/pocket-tail/pocket-tail
-cmd/url-to-epub/url-to-epub
 
 # Binaries for programs and plugins
 *.exe

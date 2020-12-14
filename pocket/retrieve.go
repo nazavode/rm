@@ -22,6 +22,18 @@ type retrieveOptions struct {
 	Offset      int64  `json:"offset,omitempty"`
 }
 
+type item struct {
+	ItemID        int    `json:"item_id,string"`
+	ResolvedID    int    `json:"resolved_id,string"`
+	GivenURL      string `json:"given_url"`
+	ResolvedURL   string `json:"resolved_url"`
+	GivenTitle    string `json:"given_title"`
+	ResolvedTitle string `json:"resolved_title"`
+	Favorite      string `json:"favorite"`
+	Status        string `json:"status"`
+	SortID        int    `json:"sort_id"`
+}
+
 func NewRetrieveOptions(opts ...RetrieveOpt) *retrieveOptions {
 	c := &retrieveOptions{
 		ContentType: "article",
@@ -32,31 +44,6 @@ func NewRetrieveOptions(opts ...RetrieveOpt) *retrieveOptions {
 		f(c)
 	}
 	return c
-}
-
-type item struct {
-	ItemID        int    `json:"item_id,string"`
-	ResolvedID    int    `json:"resolved_id,string"`
-	GivenURL      string `json:"given_url"`
-	ResolvedURL   string `json:"resolved_url"`
-	GivenTitle    string `json:"given_title"`
-	ResolvedTitle string `json:"resolved_title"`
-	Favorite      string `json:"favorite"`
-	Status        string `json:"status"`
-	// Excerpt       string
-	// IsArticle     int    `json:"is_article,string"`
-	// HasImage      string `json:"has_image,string"`
-	// HasVideo      string `json:"has_video,string"`
-	// WordCount     int    `json:"word_count,string"`
-
-	// // Fields for detailed response
-	// Tags    map[string]map[string]interface{}
-	// Authors map[string]map[string]interface{}
-	// Images  map[string]map[string]interface{}
-	// Videos  map[string]map[string]interface{}
-
-	// Fields that are not documented but exist
-	SortId int `json:"sort_id"`
 }
 
 type RetrieveOpt func(*retrieveOptions)
@@ -208,5 +195,5 @@ func (a *Auth) Tail(conf *retrieveOptions, tick <-chan time.Time, done <-chan bo
 type itemList []item
 
 func (s itemList) Len() int           { return len(s) }
-func (s itemList) Less(i, j int) bool { return s[i].SortId < s[j].SortId }
+func (s itemList) Less(i, j int) bool { return s[i].SortID < s[j].SortID }
 func (s itemList) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }

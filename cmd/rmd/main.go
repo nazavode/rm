@@ -18,16 +18,15 @@ import (
 )
 
 type conf struct {
-	Timeout               time.Duration
-	WorkDir               string
-	Pandoc                string
 	Keep                  bool
+	Timeout               time.Duration
+	PollInterval          time.Duration
+	WorkDir               string
 	DestDir               string
 	RemarkableDeviceToken string
 	RemarkableUserToken   string
 	PocketKey             string
 	PocketToken           string
-	PollInterval          time.Duration
 }
 
 type document struct {
@@ -53,7 +52,7 @@ func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *documen
 						Warn("document upload failed")
 				}
 				log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath}).
-					Trace("document uploaded")
+					Info("document uploaded")
 				if !c.Keep {
 					if err := os.Remove(doc.FilePath); err != nil {
 						log.WithField("path", doc.FilePath).
@@ -106,8 +105,6 @@ func doRetrieve(id uint64, c *conf, item *url.URL, upload chan<- *document, wg *
 }
 
 func notifySignals(chans ...chan<- bool) {
-	// Send stop signal to tailer goroutine when
-	// we receive a SIGTERM
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	go func() {
@@ -125,7 +122,7 @@ func notifySignals(chans ...chan<- bool) {
 
 func appMain(c *conf) error {
 	// Ensure we have external commands
-	if _, err := exec.LookPath(c.Pandoc); err != nil {
+	if _, err := exec.LookPath("pandoc"); err != nil {
 		return err
 	}
 	// Create downstream destination directory
@@ -186,6 +183,7 @@ func main() {
 		Name:    "rmd",
 		Usage:   "A reMarkable cloud (https://my.remarkable.com) sync daemon",
 		Version: "v0.1a",
+		Compiled: time.Now(),
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "dest",
@@ -199,7 +197,7 @@ func main() {
 				Aliases: []string{"n"},
 				Usage:   "Use `DURATION` as the poll interval",
 				EnvVars: []string{"RMD_INTERVAL"},
-				Value:   30 * time.Second,
+				Value:   10 * time.Second,
 			},
 			&cli.StringFlag{
 				Name:    "rm-device",
@@ -233,12 +231,6 @@ func main() {
 				Usage:   "Keep all temporary files.",
 				EnvVars: []string{"RMD_KEEP"},
 			},
-			&cli.StringFlag{
-				Name:    "pandoc",
-				Usage:   "Use `EXE` as document format conversion program",
-				EnvVars: []string{"RMD_PANDOC"},
-				Value:   "pandoc",
-			},
 			&cli.BoolFlag{
 				Name:    "verbose",
 				Aliases: []string{"v"},
@@ -256,17 +248,17 @@ func main() {
 				log.WithField("path", tmpdir).Fatal("failed to create working directory")
 			}
 			log.WithField("path", tmpdir).Trace("working directory created")
+			ctx.Deadline()
 			c := &conf{
-				Timeout:               ctx.Duration("timeout"),
-				WorkDir:               tmpdir,
-				Pandoc:                ctx.String("pandoc"),
 				Keep:                  ctx.Bool("keep"),
+				Timeout:               ctx.Duration("timeout"),
+				PollInterval:          ctx.Duration("interval"),
+				WorkDir:               tmpdir,
 				DestDir:               ctx.String("dest"),
 				RemarkableDeviceToken: ctx.String("rm-device"),
 				RemarkableUserToken:   ctx.String("rm-user"),
 				PocketKey:             ctx.String("pocket-key"),
 				PocketToken:           ctx.String("pocket-token"),
-				PollInterval:          ctx.Duration("interval"),
 			}
 			if !c.Keep {
 				defer func() {
