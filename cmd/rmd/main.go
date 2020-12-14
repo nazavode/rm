@@ -18,11 +18,16 @@ import (
 )
 
 type conf struct {
-	Timeout time.Duration
-	WorkDir string
-	Pandoc  string
-	Keep    bool
-	DestDir string
+	Timeout               time.Duration
+	WorkDir               string
+	Pandoc                string
+	Keep                  bool
+	DestDir               string
+	RemarkableDeviceToken string
+	RemarkableUserToken   string
+	PocketKey             string
+	PocketToken           string
+	PollInterval          time.Duration
 }
 
 type document struct {
@@ -31,12 +36,14 @@ type document struct {
 }
 
 func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *document, chan<- bool) {
-	in := make(chan *document, 100)
+	in := make(chan *document, 10)
 	stop := make(chan bool, 1)
 	go func() {
 		log.Trace("uploader started")
-		defer wg.Done()
-		defer log.Trace("uploader done")
+		defer func() {
+			wg.Done()
+			log.Trace("uploader done")
+		}()
 		for {
 			select {
 			case doc := <-in:
@@ -98,7 +105,7 @@ func doRetrieve(id uint64, c *conf, item *url.URL, upload chan<- *document, wg *
 	upload <- &document{ID: id, FilePath: outPath}
 }
 
-func handleSignals(chans ...chan<- bool) {
+func notifySignals(chans ...chan<- bool) {
 	// Send stop signal to tailer goroutine when
 	// we receive a SIGTERM
 	signals := make(chan os.Signal, 1)
@@ -116,40 +123,14 @@ func handleSignals(chans ...chan<- bool) {
 	}()
 }
 
-func appMain(ctx *cli.Context) error {
-	log.SetLevel(log.WarnLevel)
-	if ctx.Bool("verbose") {
-		log.SetLevel(log.TraceLevel)
-	}
-	c := &conf{
-		Timeout: ctx.Duration("timeout"),
-		Pandoc:  ctx.String("pandoc"),
-		Keep:    ctx.Bool("keep"),
-		DestDir: ctx.String("dest"),
-	}
+func appMain(c *conf) error {
 	// Ensure we have external commands
 	if _, err := exec.LookPath(c.Pandoc); err != nil {
 		return err
 	}
-	// Additional scaffolding
-	tmp, err := ioutil.TempDir("", "rmd")
-	if err != nil {
-		log.WithField("path", tmp).Fatal("failed to create working directory")
-	}
-	log.WithField("path", tmp).Trace("working directory created")
-	defer func() {
-		if !c.Keep {
-			if err := os.RemoveAll(tmp); err != nil {
-				log.WithField("path", tmp).Warn("failed to remove working directory")
-			} else {
-				log.WithField("path", tmp).Trace("working directory removed")
-			}
-		}
-	}()
-	c.WorkDir = tmp
 	// Create downstream destination directory
 	log.Trace("connecting to reMarkable cloud")
-	rmConn, err := rm.NewConnection(ctx.String("rm-device"), ctx.String("rm-user"))
+	rmConn, err := rm.NewConnection(c.RemarkableDeviceToken, c.RemarkableUserToken)
 	if err != nil {
 		log.WithError(err).
 			Fatal("connection to reMarkable cloud failed")
@@ -165,15 +146,15 @@ func appMain(ctx *cli.Context) error {
 		Trace("reMarkable destination directory created")
 	// Spawn item producer
 	pocketConn := &pocket.Auth{
-		ConsumerKey: ctx.String("pocket-key"),
-		AccessToken: ctx.String("pocket-token"),
+		ConsumerKey: c.PocketKey,
+		AccessToken: c.PocketToken,
 	}
-	tailerTick := time.NewTicker(ctx.Duration("interval"))
+	tailerTick := time.NewTicker(c.PollInterval)
 	tailerStop := make(chan bool, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	uploaderIn, uploaderStop := doUpload(c, rmConn, &wg)
-	handleSignals(tailerStop, uploaderStop)
+	notifySignals(tailerStop, uploaderStop)
 	defer func() {
 		uploaderStop <- true
 		tailerStop <- true
@@ -205,7 +186,6 @@ func main() {
 		Name:    "rmd",
 		Usage:   "A reMarkable cloud (https://my.remarkable.com) sync daemon",
 		Version: "v0.1a",
-		Action:  appMain,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "dest",
@@ -265,6 +245,39 @@ func main() {
 				Usage:   "Verbose mode. Causes rmd to print debugging messages about its progress.",
 				EnvVars: []string{"RMD_VERBOSE"},
 			},
+		},
+		Action: func(ctx *cli.Context) error {
+			log.SetLevel(log.WarnLevel)
+			if ctx.Bool("verbose") {
+				log.SetLevel(log.TraceLevel)
+			}
+			tmpdir, err := ioutil.TempDir("", "rmd")
+			if err != nil {
+				log.WithField("path", tmpdir).Fatal("failed to create working directory")
+			}
+			log.WithField("path", tmpdir).Trace("working directory created")
+			c := &conf{
+				Timeout:               ctx.Duration("timeout"),
+				WorkDir:               tmpdir,
+				Pandoc:                ctx.String("pandoc"),
+				Keep:                  ctx.Bool("keep"),
+				DestDir:               ctx.String("dest"),
+				RemarkableDeviceToken: ctx.String("rm-device"),
+				RemarkableUserToken:   ctx.String("rm-user"),
+				PocketKey:             ctx.String("pocket-key"),
+				PocketToken:           ctx.String("pocket-token"),
+				PollInterval:          ctx.Duration("interval"),
+			}
+			if !c.Keep {
+				defer func() {
+					if err := os.RemoveAll(tmpdir); err != nil {
+						log.WithField("path", tmpdir).Warn("failed to remove working directory")
+					} else {
+						log.WithField("path", tmpdir).Trace("working directory removed")
+					}
+				}()
+			}
+			return appMain(c)
 		},
 	}
 	cli.VersionFlag = &cli.BoolFlag{
