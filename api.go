@@ -24,15 +24,26 @@ type Auth struct {
 func NewConnection(deviceToken, userToken string) (*Connection, error) {
 	rmLog.InitLog() // TODO fix upstream
 	if len(deviceToken) <= 0 {
-		return nil, errors.New("invalid reMarkable device token")
+		return nil, errors.New("empty reMarkable device token")
 	}
 	if len(userToken) <= 0 {
-		return nil, errors.New("invalid reMarkable user token")
+		return nil, errors.New("empty reMarkable user token")
 	}
 	auth := rmModel.AuthTokens{DeviceToken: deviceToken, UserToken: userToken}
 	transport := rmTransport.CreateHttpClientCtx(auth)
 	apiCtx, err := rmApi.CreateApiCtx(&transport)
 	return &Connection{apiCtx}, err
+}
+
+func NewUserToken(deviceToken string) (string, error) {
+	auth := rmModel.AuthTokens{DeviceToken: deviceToken, UserToken: ""}
+	conn := rmTransport.CreateHttpClientCtx(auth)
+	resp := rmTransport.BodyString{}
+	err := conn.Post(rmTransport.DeviceBearer, "https://my.remarkable.com/token/json/2/user/new", nil, &resp)
+	if err != nil {
+		return "", fmt.Errorf("failed to create a new reMarkable user token: %w", err)
+	}
+	return resp.Content, nil
 }
 
 func (s *Connection) MkDir(target string) error {
@@ -59,7 +70,7 @@ func (s *Connection) MkDir(target string) error {
 	}
 	document, err := s.apiCtx.CreateDir(parentID, newDir)
 	if err != nil {
-		return fmt.Errorf("failed to create directory: %s", err)
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
 	s.apiCtx.Filetree.AddDocument(document)
 	return nil
@@ -81,7 +92,7 @@ func (s *Connection) Put(srcName, destDir string) error {
 
 	document, err := s.apiCtx.UploadDocument(destNode.Id(), srcName)
 	if err != nil {
-		return fmt.Errorf("failed to upload file [%s] %v", srcName, err)
+		return fmt.Errorf("failed to upload file %s: %w", srcName, err)
 	}
 	s.apiCtx.Filetree.AddDocument(*document)
 	return nil

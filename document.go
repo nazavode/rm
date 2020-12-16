@@ -71,7 +71,7 @@ func DocumentToEPUB(d Document, filename string, timeout time.Duration) error {
 	meta.Title = d.Title()
 	metafile, err := ioutil.TempFile("", "epub.*.json")
 	if err != nil {
-		return fmt.Errorf("cannot create epub metadata temporary file: %s", err)
+		return fmt.Errorf("cannot create epub metadata temporary file: %w", err)
 	}
 	defer os.Remove(metafile.Name())
 	metaContent, err := json.Marshal(meta)
@@ -79,7 +79,7 @@ func DocumentToEPUB(d Document, filename string, timeout time.Duration) error {
 		return fmt.Errorf("cannot marshal epub metadata: %s", err)
 	}
 	if err := ioutil.WriteFile(metafile.Name(), metaContent, 0644); err != nil {
-		return fmt.Errorf("cannot write epub metadata temporary file: %s", err)
+		return fmt.Errorf("cannot write epub metadata temporary file: %w", err)
 	}
 	err = command(d.Content(), timeout, "pandoc",
 		"-o", filename, "-f", d.Format(), "--metadata-file", metafile.Name())

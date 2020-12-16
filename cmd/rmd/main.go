@@ -18,6 +18,7 @@ import (
 )
 
 type conf struct {
+	ConnectionAttempts    int
 	Keep                  bool
 	Timeout               time.Duration
 	PollInterval          time.Duration
@@ -127,10 +128,30 @@ func appMain(c *conf) error {
 	}
 	// Create downstream destination directory
 	log.Trace("connecting to reMarkable cloud")
+	// First attempt with provided user token
 	rmConn, err := rm.NewConnection(c.RemarkableDeviceToken, c.RemarkableUserToken)
 	if err != nil {
 		log.WithError(err).
-			Fatal("connection to reMarkable cloud failed")
+			Trace("connection to reMarkable cloud failed")
+		for i := 0; i < c.ConnectionAttempts; i++ {
+			log := log.WithFields(log.Fields{"attempt": i + 1, "limit": c.ConnectionAttempts})
+			log.Trace("requesting a new reMarkable user token")
+			c.RemarkableUserToken, err = rm.NewUserToken(c.RemarkableDeviceToken)
+			if err != nil {
+				log.WithError(err).Trace("new user token request failed")
+				continue
+			}
+			log.Trace("connecting to reMarkable cloud")
+			rmConn, err = rm.NewConnection(c.RemarkableDeviceToken, c.RemarkableUserToken)
+			if err == nil {
+				break
+			}
+			log.WithError(err).
+				Trace("connection to reMarkable cloud failed")
+		}
+		if err != nil {
+			log.Fatal("cannot connect to reMarkable cloud")
+		}
 	}
 	log.Trace("connected to reMarkable cloud")
 	log.WithField("path", c.DestDir).
@@ -180,9 +201,9 @@ func appMain(c *conf) error {
 
 func main() {
 	app := &cli.App{
-		Name:    "rmd",
-		Usage:   "A reMarkable cloud (https://my.remarkable.com) sync daemon",
-		Version: "v0.1a",
+		Name:     "rmd",
+		Usage:    "A reMarkable cloud (https://my.remarkable.com) sync daemon",
+		Version:  "v0.1a",
 		Compiled: time.Now(),
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -206,7 +227,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:    "rm-user",
-				Usage:   "Use `STRING` as reMarkable cloud API user token",
+				Usage:   "Use `STRING` as reMarkable cloud API user token; if not provided will be generated",
 				EnvVars: []string{"RMD_RM_USER_TOKEN"},
 			},
 			&cli.StringFlag{
@@ -225,6 +246,12 @@ func main() {
 				Usage:   "Use `DURATION` as the hard timeout for external programs",
 				EnvVars: []string{"RMD_TIMEOUT"},
 				Value:   30 * time.Second,
+			},
+			&cli.IntFlag{
+				Name:    "retry",
+				Usage:   "Use `NUM` as the maximum number of connection attempts to reMarkable cloud",
+				EnvVars: []string{"RMD_RETRY"},
+				Value:   3,
 			},
 			&cli.BoolFlag{
 				Name:    "keep",
@@ -250,6 +277,7 @@ func main() {
 			log.WithField("path", tmpdir).Trace("working directory created")
 			ctx.Deadline()
 			c := &conf{
+				ConnectionAttempts:    ctx.Int("retry"),
 				Keep:                  ctx.Bool("keep"),
 				Timeout:               ctx.Duration("timeout"),
 				PollInterval:          ctx.Duration("interval"),
