@@ -47,24 +47,32 @@ func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *documen
 		for {
 			select {
 			case doc := <-in:
-				if err := conn.Put(doc.FilePath, c.DestDir); err != nil {
-					log.WithError(err).
-						WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath}).
-						Warn("document upload failed")
-				}
-				log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath}).
-					Info("document uploaded")
-				if !c.Keep {
-					if err := os.Remove(doc.FilePath); err != nil {
-						log.WithField("path", doc.FilePath).
-							WithError(err).
-							Warn("failed to remove document")
-					} else {
-						log.WithField("path", doc.FilePath).
-							Trace("document removed")
+				dlog := log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath})
+				err := conn.Put(doc.FilePath, c.DestDir)
+				if err != nil {
+					dlog.WithError(err).Warn("document upload failed")
+					dlog.Trace("refreshing connection tokens")
+					conn, err = rmConnect(c)
+					if err != nil {
+						dlog.WithError(err).Error("cannot refresh connection, skipping document")
+						continue
+					}
+					dlog.Trace("connection tokens refreshed")
+					err = conn.Put(doc.FilePath, c.DestDir)
+					if err != nil {
+						dlog.WithError(err).Warn("document upload failed, skipping document")
+						continue
 					}
 				}
-
+				dlog.Info("document uploaded")
+				if !c.Keep {
+					if err := os.Remove(doc.FilePath); err != nil {
+						dlog.WithError(err).
+							Warn("failed to remove document")
+					} else {
+						dlog.Trace("document removed")
+					}
+				}
 			case <-stop:
 				log.Trace("uploader received shutdown request")
 				return
@@ -121,18 +129,13 @@ func notifySignals(chans ...chan<- bool) {
 	}()
 }
 
-func appMain(c *conf) error {
-	// Ensure we have external commands
-	if _, err := exec.LookPath("pandoc"); err != nil {
-		return err
-	}
-	// Create downstream destination directory
-	log.Trace("connecting to reMarkable cloud")
+func rmConnect(c *conf) (*rm.Connection, error) {
 	// First attempt with provided user token
 	rmConn, err := rm.NewConnection(c.RemarkableDeviceToken, c.RemarkableUserToken)
 	if err != nil {
+		// First attempt errored, begin subsequent attempts
 		log.WithError(err).
-			Trace("connection to reMarkable cloud failed")
+			Trace("first attempt at connecting to reMarkable cloud failed")
 		for i := 0; i < c.ConnectionAttempts; i++ {
 			log := log.WithFields(log.Fields{"attempt": i + 1, "limit": c.ConnectionAttempts})
 			log.Trace("requesting a new reMarkable user token")
@@ -150,10 +153,24 @@ func appMain(c *conf) error {
 				Trace("connection to reMarkable cloud failed")
 		}
 		if err != nil {
-			log.Fatal("cannot connect to reMarkable cloud")
+			return nil, err
 		}
 	}
+	return rmConn, nil
+}
+
+func appMain(c *conf) error {
+	// Ensure we have external commands
+	if _, err := exec.LookPath("pandoc"); err != nil {
+		return err
+	}
+	log.Trace("connecting to reMarkable cloud")
+	rmConn, err := rmConnect(c)
+	if err != nil {
+		log.WithError(err).Fatal("cannot connect to reMarkable cloud")
+	}
 	log.Trace("connected to reMarkable cloud")
+	// Create downstream destination directory
 	log.WithField("path", c.DestDir).
 		Trace("creating reMarkable destination directory")
 	if err := rmConn.MkDir(c.DestDir); err != nil {
