@@ -10,6 +10,7 @@ import (
 	"path"
 	"sync"
 	"time"
+	"errors"
 
 	"github.com/nazavode/rm"
 	"github.com/nazavode/rm/pocket"
@@ -49,6 +50,10 @@ func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *documen
 			case doc := <-in:
 				dlog := log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath})
 				err := conn.Put(doc.FilePath, c.DestDir)
+				if errors.Is(err, rm.ErrAlreadyExists) {
+					dlog.Trace("file already exists, skipping")
+					continue
+				}
 				if err != nil {
 					dlog.WithError(err).Warn("document upload failed")
 					dlog.Trace("refreshing connection tokens")
@@ -59,6 +64,10 @@ func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *documen
 					}
 					dlog.Trace("connection tokens refreshed")
 					err = conn.Put(doc.FilePath, c.DestDir)
+					if errors.Is(err, rm.ErrAlreadyExists) {
+						dlog.Trace("file already exists, skipping")
+						continue
+					}
 					if err != nil {
 						dlog.WithError(err).Warn("document upload failed, skipping document")
 						continue

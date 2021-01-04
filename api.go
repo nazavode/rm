@@ -13,6 +13,10 @@ import (
 	rmUtil "github.com/juruen/rmapi/util"
 )
 
+var ErrNotFound = errors.New("not found")
+var ErrAlreadyExists = errors.New("already exists")
+var ErrApi = errors.New("cloud API call error")
+
 type Connection struct {
 	apiCtx *rmApi.ApiCtx
 }
@@ -52,7 +56,7 @@ func (s *Connection) MkDir(target string) error {
 	node, err := s.apiCtx.Filetree.NodeByPath(target, s.apiCtx.Filetree.Root())
 	if err == nil {
 		if !node.IsDirectory() {
-			return fmt.Errorf("a file with at same path already exists")
+			return fmt.Errorf("destination path %s: %w", target, ErrAlreadyExists)
 		}
 		return nil
 	}
@@ -61,7 +65,7 @@ func (s *Connection) MkDir(target string) error {
 	newDir := path.Base(target)
 	parentNode, err := s.apiCtx.Filetree.NodeByPath(parentDir, s.apiCtx.Filetree.Root())
 	if err != nil || parentNode.IsFile() {
-		return fmt.Errorf("parent directory doesn't exist")
+		return fmt.Errorf("parent directory %s: %w", parentDir, ErrNotFound)
 	}
 	// Create directory from parent node
 	parentID := parentNode.Id()
@@ -70,7 +74,7 @@ func (s *Connection) MkDir(target string) error {
 	}
 	document, err := s.apiCtx.CreateDir(parentID, newDir)
 	if err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+		return fmt.Errorf("failed to create directory %s: %s: %w", newDir, err, ErrApi)
 	}
 	s.apiCtx.Filetree.AddDocument(document)
 	return nil
@@ -82,17 +86,17 @@ func (s *Connection) Put(srcName, destDir string) error {
 
 	destNode, err := s.apiCtx.Filetree.NodeByPath(destDir, s.apiCtx.Filetree.Root())
 	if err != nil || destNode.IsFile() {
-		return fmt.Errorf("directory doesn't exist: %s", destDir)
+		return fmt.Errorf("destination directory %s: %w", destDir, ErrNotFound)
 	}
 
 	_, err = s.apiCtx.Filetree.NodeByPath(docName, destNode)
 	if err == nil {
-		return errors.New("file already exists")
+		return fmt.Errorf("destination file %s: %w", docName, ErrAlreadyExists)
 	}
 
 	document, err := s.apiCtx.UploadDocument(destNode.Id(), srcName)
 	if err != nil {
-		return fmt.Errorf("failed to upload file %s: %w", srcName, err)
+		return fmt.Errorf("failed to upload file %s: %s: %w", srcName, err, ErrApi)
 	}
 	s.apiCtx.Filetree.AddDocument(*document)
 	return nil
