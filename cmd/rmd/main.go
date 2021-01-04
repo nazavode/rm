@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/url"
@@ -10,7 +11,6 @@ import (
 	"path"
 	"sync"
 	"time"
-	"errors"
 
 	"github.com/nazavode/rm"
 	"github.com/nazavode/rm/pocket"
@@ -36,6 +36,30 @@ type document struct {
 	FilePath string
 }
 
+func doPut(c *conf, conn *rm.Connection, doc *document) (*rm.Connection, error) {
+	log := log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath})
+	err := conn.Put(doc.FilePath, c.DestDir)
+	if errors.Is(err, rm.ErrAlreadyExists) {
+		log.Trace("file already exists")
+		return conn, nil
+	} else if errors.Is(err, rm.ErrApi) {
+		log.WithError(err).Trace("document upload failed")
+		log.Trace("retrying upload by refreshing connection tokens")
+		newConn, err := rmConnect(c)
+		if err != nil {
+			return conn, err
+		}
+		conn = newConn
+		log.Trace("connection tokens refreshed")
+		err = conn.Put(doc.FilePath, c.DestDir)
+		if errors.Is(err, rm.ErrAlreadyExists) {
+			log.Trace("file already exists")
+			return conn, nil
+		}
+	}
+	return conn, err
+}
+
 func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *document, chan<- bool) {
 	in := make(chan *document, 10)
 	stop := make(chan bool, 1)
@@ -45,35 +69,17 @@ func doUpload(c *conf, conn *rm.Connection, wg *sync.WaitGroup) (chan<- *documen
 			wg.Done()
 			log.Trace("uploader done")
 		}()
+		var err error = nil
 		for {
 			select {
 			case doc := <-in:
 				dlog := log.WithFields(log.Fields{"id": doc.ID, "path": doc.FilePath})
-				err := conn.Put(doc.FilePath, c.DestDir)
-				if errors.Is(err, rm.ErrAlreadyExists) {
-					dlog.Trace("file already exists, skipping")
-					continue
-				}
+				conn, err = doPut(c, conn, doc)
 				if err != nil {
-					dlog.WithError(err).Warn("document upload failed")
-					dlog.Trace("refreshing connection tokens")
-					conn, err = rmConnect(c)
-					if err != nil {
-						dlog.WithError(err).Error("cannot refresh connection, skipping document")
-						continue
-					}
-					dlog.Trace("connection tokens refreshed")
-					err = conn.Put(doc.FilePath, c.DestDir)
-					if errors.Is(err, rm.ErrAlreadyExists) {
-						dlog.Trace("file already exists, skipping")
-						continue
-					}
-					if err != nil {
-						dlog.WithError(err).Warn("document upload failed, skipping document")
-						continue
-					}
+					dlog.WithError(err).Warn("document failed")
+				} else {
+					dlog.Trace("done processing document")
 				}
-				dlog.Info("document uploaded")
 				if !c.Keep {
 					if err := os.Remove(doc.FilePath); err != nil {
 						dlog.WithError(err).
