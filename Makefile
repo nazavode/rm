@@ -1,8 +1,16 @@
-all: image
+all: bin/rmd
 
-export PLATFORM=linux
+PLATFORM=local
 export DOCKER_BUILDKIT=1
 
-image:
+.PHONY: bin/rmd
+bin/rmd:
 	@docker build . --target bin \
-	--platform ${PLATFORM} -t rmd:latest
+	--output bin/ \
+	--platform ${PLATFORM}
+
+.PHONY: image
+image:
+	@docker build . --target deploy \
+	--platform linux \
+	-t rmd:dev
